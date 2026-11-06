@@ -9,6 +9,9 @@
     <CodesignKey>-</CodesignKey>
     <ValidateXcodeVersion>false</ValidateXcodeVersion>
   </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <CodesignKey>Apple Development: z9townerwork@yahoo.com (8NTU7G3264)</CodesignKey>
+  </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Avalonia.iOS" Version="$(AvaloniaVersion)" />
