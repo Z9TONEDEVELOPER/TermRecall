@@ -13,7 +13,7 @@
   <key>LSRequiresIPhoneOS</key>
   <true/>
   <key>MinimumOSVersion</key>
-  <string>13.0</string>
+  <string>15.0</string>
   <key>UIDeviceFamily</key>
   <array>
     <integer>1</integer>
@@ -36,5 +36,22 @@
   </array>
   <key>NSUserNotificationsUsageDescription</key>
   <string>TermRecall напоминает о повторении терминов.</string>
+  <key>UIApplicationSceneManifest</key>
+  <dict>
+    <key>UIApplicationSupportsMultipleScenes</key>
+    <false/>
+    <key>UISceneConfigurations</key>
+    <dict>
+      <key>UIWindowSceneSessionRoleApplication</key>
+      <array>
+        <dict>
+          <key>UISceneConfigurationName</key>
+          <string>TermRecall</string>
+          <key>UISceneDelegateClassName</key>
+          <string>SceneDelegate</string>
+        </dict>
+      </array>
+    </dict>
+  </dict>
 </dict>
 </plist>

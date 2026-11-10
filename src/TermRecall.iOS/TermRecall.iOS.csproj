@@ -2,12 +2,19 @@
   <PropertyGroup>
     <OutputType>Exe</OutputType>
     <TargetFramework>net10.0-ios</TargetFramework>
-    <SupportedOSPlatformVersion>13.0</SupportedOSPlatformVersion>
+    <SupportedOSPlatformVersion>15.0</SupportedOSPlatformVersion>
     <Nullable>enable</Nullable>
     <ProvisioningType>manual</ProvisioningType>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
+    <EnableCodeSigning>true</EnableCodeSigning>
+    <CodesignKey>Apple Development: z9townerwork@yahoo.com (8NTU7G3264)</CodesignKey>
+    <_SpecifiedCodesignKey>Apple Development: z9townerwork@yahoo.com (8NTU7G3264)</_SpecifiedCodesignKey>
+    <CodesignRequireProvisioningProfile>false</CodesignRequireProvisioningProfile>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)' != 'Debug' ">
     <EnableCodeSigning>false</EnableCodeSigning>
     <CodesignKey>-</CodesignKey>
-    <ValidateXcodeVersion>false</ValidateXcodeVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -17,4 +24,9 @@
   <ItemGroup>
     <ProjectReference Include="..\TermRecall.App\TermRecall.App.csproj" />
   </ItemGroup>
+
+  <!-- Симулятор Xcode 27 завершает сборку с ad-hoc подписью. Для Debug подписываем сертификатом разработчика. -->
+  <Target Name="SignDebugSimulator" AfterTargets="Build" Condition="'$(Configuration)' == 'Debug' And '$(RuntimeIdentifier)' == 'iossimulator-arm64'">
+    <Exec Command="codesign --force --deep --sign &quot;$(CodesignKey)&quot; --timestamp=none &quot;$(MSBuildProjectDirectory)/$(OutputPath)$(AssemblyName).app&quot;" />
+  </Target>
 </Project>

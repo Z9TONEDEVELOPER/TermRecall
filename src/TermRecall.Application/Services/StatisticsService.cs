@@ -32,20 +32,32 @@ public sealed class DashboardService(
 {
     public async Task<DashboardSummary> GetAsync(CancellationToken cancellationToken)
     {
-        var allTerms = await terms.ListAsync(cancellationToken);
+        var allTerms = (await terms.ListAsync(cancellationToken)).Where(term => !term.Archived).ToList();
         var records = await history.ListAsync(cancellationToken);
         var user = await settings.GetAsync(cancellationToken);
         var today = ReviewCalendar.LocalDate(clock.UtcNow, clock.TimeZone);
         var due = allTerms.Count(term => ReviewCalendar.IsDue(term.NextReviewAtUtc, clock.UtcNow, clock.TimeZone));
         var overdue = allTerms.Count(term => ReviewCalendar.IsOverdue(term.NextReviewAtUtc, clock.UtcNow, clock.TimeZone));
         var fresh = allTerms.Count(term => term.Status == TermStatus.New && term.LastReviewedAtUtc is null);
+        var learning = allTerms.Count(term => term.Status is TermStatus.Learning or TermStatus.Review);
         var mastered = allTerms.Count(term => term.Status == TermStatus.Mastered);
         var difficult = allTerms.Count(term => ReviewQueuePlanner.IsDifficult(term, user.DifficultEaseThreshold));
         var success = LearningAnalytics.SuccessPercent(LearningAnalytics.CountSuccessful(records.Select(record => record.Quality)), records.Count);
         var activeDays = records
             .Select(record => ReviewCalendar.LocalDate(record.ReviewedAtUtc, clock.TimeZone))
             .ToHashSet();
-        var reviewsToday = records.Count(record => ReviewCalendar.LocalDate(record.ReviewedAtUtc, clock.TimeZone) == today);
+        var (reviewsToday, introducedToday) = ReviewService.CountToday(records, clock);
+        var nextSession = ReviewQueuePlanner.Plan(allTerms, clock.UtcNow, clock.TimeZone, new QueueRequest(
+            StudyMode.DueMix,
+            null,
+            user.IncludeNewTerms,
+            user.DailyReviewLimit,
+            user.DailyNewTermsLimit,
+            reviewsToday,
+            introducedToday,
+            user.DifficultEaseThreshold,
+            false));
+        var planned = ReviewQueuePlanner.Classify(nextSession, clock.UtcNow, clock.TimeZone);
         var week = Enumerable.Range(0, 7)
             .Select(offset => today.AddDays(-6 + offset))
             .Select(date => new DayPoint(
@@ -72,19 +84,37 @@ public sealed class DashboardService(
             user.DailyReviewLimit,
             reviewsToday >= user.DailyReviewLimit,
             showReminder,
-            week);
+            week,
+            learning,
+            due - overdue,
+            planned.NewTerms,
+            planned.Total,
+            Math.Max(0, user.DailyReviewLimit - reviewsToday),
+            LearningAnalytics.DailyGoalPercent(reviewsToday, user.DailyReviewLimit),
+            Recent(allTerms, term => term.Status == TermStatus.Mastered),
+            Recent(allTerms, term => term.LastReviewedAtUtc is not null));
     }
+
+    private static IReadOnlyList<RecentTerm> Recent(IReadOnlyList<Term> terms, Func<Term, bool> predicate)
+        => terms
+            .Where(predicate)
+            .Where(term => term.LastReviewedAtUtc is not null)
+            .OrderByDescending(term => term.LastReviewedAtUtc)
+            .Take(3)
+            .Select(term => new RecentTerm(term.Title, term.Status, term.LastReviewedAtUtc!.Value))
+            .ToList();
 }
 
 public sealed class StatisticsService(
     ITermRepository terms,
+    ICategoryRepository categories,
     IReviewHistoryRepository history,
     ISettingsRepository settings,
     IClock clock) : IStatisticsService
 {
     public async Task<StatisticsReport> GetAsync(StatsRange range, CancellationToken cancellationToken)
     {
-        var allTerms = await terms.ListAsync(cancellationToken);
+        var allTerms = (await terms.ListAsync(cancellationToken)).Where(term => !term.Archived).ToList();
         var records = await history.ListAsync(cancellationToken);
         var user = await settings.GetAsync(cancellationToken);
         var today = ReviewCalendar.LocalDate(clock.UtcNow, clock.TimeZone);
@@ -92,6 +122,7 @@ public sealed class StatisticsService(
         {
             StatsRange.Week => today.AddDays(-6),
             StatsRange.Month => today.AddDays(-29),
+            StatsRange.Quarter => today.AddDays(-89),
             _ => records.Count == 0
                 ? today
                 : records.Min(record => ReviewCalendar.LocalDate(record.ReviewedAtUtc, clock.TimeZone))
@@ -125,6 +156,17 @@ public sealed class StatisticsService(
         var slices = Enum.GetValues<TermStatus>()
             .Select(status => new StatusSlice(status, allTerms.Count(term => term.Status == status)))
             .ToList();
+        var categoryNames = (await categories.ListAsync(cancellationToken)).ToDictionary(category => category.Id, category => category.Name);
+        var categoryStudies = LearningAnalytics.ByCategory(
+            allTerms.Select(term => (
+                term.Id,
+                term.CategoryId is Guid categoryId && categoryNames.TryGetValue(categoryId, out var name) ? name : "Без категории")).ToList(),
+            window.Select(record => (record.TermId, record.Quality)).ToList());
+        var forecast = LearningAnalytics.ForecastScheduledReviews(
+            allTerms.Select(term => term.NextReviewAtUtc is DateTime due
+                ? ReviewCalendar.LocalDate(due, clock.TimeZone)
+                : (DateOnly?)null),
+            today);
 
         return new StatisticsReport(
             range,
@@ -146,7 +188,12 @@ public sealed class StatisticsService(
             user.MasteryTargetDays,
             activity,
             slices,
-            trend);
+            trend,
+            user.WeightSuccess,
+            user.WeightRegularity,
+            user.WeightMastery,
+            categoryStudies,
+            forecast);
     }
 
     private IReadOnlyList<DayPoint> BuildActivity(IReadOnlyList<ReviewRecord> window, DateOnly from, DateOnly today)
@@ -221,6 +268,9 @@ public sealed class StatisticsService(
 public sealed class SettingsService(
     ISettingsRepository settings,
     IReviewHistoryRepository history,
+    IWrittenAnswerRepository writtenAnswers,
+    IAssessmentRepository assessments,
+    IAchievementRepository achievements,
     ITermRepository terms,
     ITermService termService,
     IReminderScheduler reminders) : ISettingsService
@@ -242,6 +292,9 @@ public sealed class SettingsService(
     public async Task ResetStatisticsAsync(CancellationToken cancellationToken)
     {
         await history.DeleteAllAsync(cancellationToken);
+        await writtenAnswers.DeleteAllAsync(cancellationToken);
+        await assessments.DeleteAllAsync(cancellationToken);
+        await achievements.DeleteAllAsync(cancellationToken);
         await terms.ResetSchedulingAsync(cancellationToken);
     }
 }

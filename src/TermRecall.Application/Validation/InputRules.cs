@@ -10,6 +10,19 @@ public static class InputRules
     public const int MaxLongText = 4000;
     public const int MaxName = 80;
 
+    public static void WrittenResponse(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            throw new ValidationException("Сначала напишите определение своими словами.");
+        }
+
+        if (text.Trim().Length > MaxDefinition)
+        {
+            throw new ValidationException($"Ответ не длиннее {MaxDefinition} символов.");
+        }
+    }
+
     public static void Quality(int quality)
     {
         if (quality is < 0 or > 5)
@@ -64,6 +77,50 @@ public static class InputRules
         }
     }
 
+    public static void CodeAndLink(string code, string link)
+    {
+        if (code.Trim().Length > 80)
+        {
+            throw new ValidationException("Код не длиннее 80 символов.");
+        }
+
+        var url = link.Trim();
+        if (url.Length > 300)
+        {
+            throw new ValidationException("Ссылка не длиннее 300 символов.");
+        }
+
+        if (url.Length > 0 && !url.StartsWith("https://", StringComparison.OrdinalIgnoreCase) && !url.StartsWith("http://", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new ValidationException("Ссылка должна начинаться с http:// или https://.");
+        }
+    }
+
+    public static IReadOnlyList<string> Tags(string text)
+    {
+        var tags = new List<string>();
+        foreach (var part in text.Split([',', ';'], StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            if (part.Length > 40)
+            {
+                throw new ValidationException("Один тег не длиннее 40 символов.");
+            }
+
+            if (tags.Any(tag => string.Equals(tag, part, StringComparison.CurrentCultureIgnoreCase)))
+            {
+                continue;
+            }
+
+            tags.Add(part);
+            if (tags.Count > 12)
+            {
+                throw new ValidationException("У термина не больше 12 тегов.");
+            }
+        }
+
+        return tags;
+    }
+
     public static void Settings(UserSettings settings)
     {
         if (settings.DailyNewTermsLimit is < 0 or > 200)
@@ -101,6 +158,11 @@ public static class InputRules
         if (settings.DifficultEaseThreshold is < 1.3 or > 3.5)
         {
             throw new ValidationException("Порог сложных терминов должен быть от 1.3 до 3.5.");
+        }
+
+        if (settings.WeeklyMinutesGoal is < 0 or > 10080)
+        {
+            throw new ValidationException("Недельная цель может быть от 0 до 10080 минут. Ноль значит, что цель не задана.");
         }
     }
 }

@@ -37,6 +37,42 @@ public interface IReviewHistoryRepository
     Task DeleteAllAsync(CancellationToken cancellationToken);
 }
 
+public interface IWrittenAnswerRepository
+{
+    Task AddAsync(WrittenAnswer answer, CancellationToken cancellationToken);
+    Task<IReadOnlyList<WrittenAnswer>> ListAsync(Guid? termId, CancellationToken cancellationToken);
+    Task DeleteAllAsync(CancellationToken cancellationToken);
+}
+
+public interface IAssessmentRepository
+{
+    Task AddAsync(AssessmentAnswer answer, CancellationToken cancellationToken);
+    Task DeleteAllAsync(CancellationToken cancellationToken);
+}
+
+public interface IFavoriteRepository
+{
+    Task<IReadOnlySet<Guid>> ListIdsAsync(CancellationToken cancellationToken);
+    Task<bool> ContainsAsync(Guid termId, CancellationToken cancellationToken);
+    Task AddAsync(Guid termId, DateTime createdAtUtc, CancellationToken cancellationToken);
+    Task RemoveAsync(Guid termId, CancellationToken cancellationToken);
+}
+
+public interface IAchievementRepository
+{
+    Task<IReadOnlyDictionary<string, DateTime>> ListAsync(CancellationToken cancellationToken);
+    Task AddAsync(string code, DateTime awardedAtUtc, CancellationToken cancellationToken);
+    Task DeleteAllAsync(CancellationToken cancellationToken);
+}
+
+public interface ITermMediaStore
+{
+    Task<TermMedia> AddAsync(Guid termId, string fileName, ReadOnlyMemory<byte> content, CancellationToken cancellationToken);
+    Task<IReadOnlyList<TermMedia>> ListAsync(Guid termId, CancellationToken cancellationToken);
+    Task<byte[]?> ReadAsync(Guid mediaId, CancellationToken cancellationToken);
+    Task DeleteForTermAsync(Guid termId, CancellationToken cancellationToken);
+}
+
 public interface ISettingsRepository
 {
     Task<UserSettings> GetAsync(CancellationToken cancellationToken);

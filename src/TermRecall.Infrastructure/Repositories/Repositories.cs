@@ -170,7 +170,8 @@ public sealed class TermRepository(SqliteDatabase database) : ITermRepository
 {
     private const string Columns = """
         id, title, definition, example, explanation, category_id, deck_id, created_at,
-        last_reviewed_at, next_review_at, interval_days, ease_factor, repetition_count, status, lapse_count
+        last_reviewed_at, next_review_at, interval_days, ease_factor, repetition_count, status, lapse_count,
+        code, reference_url, archived
         """;
 
     public Task<IReadOnlyList<Term>> ListAsync(CancellationToken cancellationToken)
@@ -186,6 +187,7 @@ public sealed class TermRepository(SqliteDatabase database) : ITermRepository
                 items.Add(Read(reader));
             }
 
+            await AttachTagsAsync(connection, transaction, items, token);
             return (IReadOnlyList<Term>)items;
         }, cancellationToken);
 
@@ -196,8 +198,21 @@ public sealed class TermRepository(SqliteDatabase database) : ITermRepository
             command.Transaction = transaction;
             command.CommandText = $"SELECT {Columns} FROM terms WHERE id = $id;";
             command.Parameters.AddWithValue("$id", Sqlio.GuidText(id));
-            await using var reader = await command.ExecuteReaderAsync(token);
-            return await reader.ReadAsync(token) ? Read(reader) : null;
+            Term? term = null;
+            await using (var reader = await command.ExecuteReaderAsync(token))
+            {
+                if (await reader.ReadAsync(token))
+                {
+                    term = Read(reader);
+                }
+            }
+
+            if (term is not null)
+            {
+                await AttachTagsAsync(connection, transaction, [term], token);
+            }
+
+            return term;
         }, cancellationToken);
 
     public Task AddAsync(Term term, CancellationToken cancellationToken)
@@ -246,7 +261,7 @@ public sealed class TermRepository(SqliteDatabase database) : ITermRepository
             ? $"""
                INSERT INTO terms({Columns})
                VALUES ($id, $title, $definition, $example, $explanation, $category, $deck, $created,
-                       $last, $next, $interval, $ease, $reps, $status, $lapses);
+                       $last, $next, $interval, $ease, $reps, $status, $lapses, $code, $url, $archived);
                """
             : """
               UPDATE terms SET
@@ -263,7 +278,10 @@ public sealed class TermRepository(SqliteDatabase database) : ITermRepository
                   ease_factor = $ease,
                   repetition_count = $reps,
                   status = $status,
-                  lapse_count = $lapses
+                  lapse_count = $lapses,
+                  code = $code,
+                  reference_url = $url,
+                  archived = $archived
               WHERE id = $id;
               """;
         command.Parameters.AddWithValue("$id", Sqlio.GuidText(term.Id));
@@ -281,8 +299,52 @@ public sealed class TermRepository(SqliteDatabase database) : ITermRepository
         command.Parameters.AddWithValue("$reps", term.RepetitionCount);
         command.Parameters.AddWithValue("$status", (int)term.Status);
         command.Parameters.AddWithValue("$lapses", term.LapseCount);
+        command.Parameters.AddWithValue("$code", term.Code);
+        command.Parameters.AddWithValue("$url", term.ReferenceUrl);
+        command.Parameters.AddWithValue("$archived", term.Archived ? 1 : 0);
         await command.ExecuteNonQueryAsync(cancellationToken);
+        await ReplaceTagsAsync(connection, transaction, term, cancellationToken);
         return 0;
+    }
+
+    private static async Task AttachTagsAsync(SqliteConnection connection, SqliteTransaction? transaction, IReadOnlyList<Term> terms, CancellationToken cancellationToken)
+    {
+        if (terms.Count == 0)
+        {
+            return;
+        }
+
+        var byId = terms.ToDictionary(term => term.Id);
+        await using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT term_id, tag FROM term_tags ORDER BY tag COLLATE NOCASE;";
+        await using var reader = await command.ExecuteReaderAsync(cancellationToken);
+        while (await reader.ReadAsync(cancellationToken))
+        {
+            var id = Sqlio.ReadGuid(reader, 0);
+            if (byId.TryGetValue(id, out var term))
+            {
+                term.Tags.Add(reader.GetString(1));
+            }
+        }
+    }
+
+    private static async Task ReplaceTagsAsync(SqliteConnection connection, SqliteTransaction? transaction, Term term, CancellationToken cancellationToken)
+    {
+        await using var delete = connection.CreateCommand();
+        delete.Transaction = transaction;
+        delete.CommandText = "DELETE FROM term_tags WHERE term_id = $id;";
+        delete.Parameters.AddWithValue("$id", Sqlio.GuidText(term.Id));
+        await delete.ExecuteNonQueryAsync(cancellationToken);
+        foreach (var tag in term.Tags)
+        {
+            await using var insert = connection.CreateCommand();
+            insert.Transaction = transaction;
+            insert.CommandText = "INSERT INTO term_tags(term_id, tag) VALUES ($id, $tag);";
+            insert.Parameters.AddWithValue("$id", Sqlio.GuidText(term.Id));
+            insert.Parameters.AddWithValue("$tag", tag);
+            await insert.ExecuteNonQueryAsync(cancellationToken);
+        }
     }
 
     private static Term Read(SqliteDataReader reader) => new()
@@ -301,7 +363,10 @@ public sealed class TermRepository(SqliteDatabase database) : ITermRepository
         EaseFactor = reader.GetDouble(11),
         RepetitionCount = reader.GetInt32(12),
         Status = (TermStatus)reader.GetInt32(13),
-        LapseCount = reader.GetInt32(14)
+        LapseCount = reader.GetInt32(14),
+        Code = reader.GetString(15),
+        ReferenceUrl = reader.GetString(16),
+        Archived = reader.GetInt32(17) == 1
     };
 }
 
@@ -402,7 +467,7 @@ public sealed class SettingsRepository(SqliteDatabase database) : ISettingsRepos
             command.CommandText = """
                 SELECT daily_new_terms_limit, daily_review_limit, reminder_enabled, reminder_time, theme,
                        include_new_terms, mastery_target_days, weight_success, weight_regularity, weight_mastery,
-                       display_name, difficult_ease_threshold
+                       display_name, difficult_ease_threshold, weekly_minutes_goal
                 FROM user_settings WHERE id = 1;
                 """;
             await using var reader = await command.ExecuteReaderAsync(token);
@@ -424,7 +489,8 @@ public sealed class SettingsRepository(SqliteDatabase database) : ISettingsRepos
                 WeightRegularity = reader.GetDouble(8),
                 WeightMastery = reader.GetDouble(9),
                 DisplayName = reader.GetString(10),
-                DifficultEaseThreshold = reader.GetDouble(11)
+                DifficultEaseThreshold = reader.GetDouble(11),
+                WeeklyMinutesGoal = reader.GetInt32(12)
             };
         }, cancellationToken);
 
@@ -437,8 +503,8 @@ public sealed class SettingsRepository(SqliteDatabase database) : ISettingsRepos
                 INSERT INTO user_settings(
                     id, daily_new_terms_limit, daily_review_limit, reminder_enabled, reminder_time, theme,
                     include_new_terms, mastery_target_days, weight_success, weight_regularity, weight_mastery,
-                    display_name, difficult_ease_threshold)
-                VALUES (1, $new, $review, $enabled, $time, $theme, $include, $target, $ws, $wr, $wm, $name, $threshold)
+                    display_name, difficult_ease_threshold, weekly_minutes_goal)
+                VALUES (1, $new, $review, $enabled, $time, $theme, $include, $target, $ws, $wr, $wm, $name, $threshold, $minutes)
                 ON CONFLICT(id) DO UPDATE SET
                     daily_new_terms_limit = excluded.daily_new_terms_limit,
                     daily_review_limit = excluded.daily_review_limit,
@@ -451,7 +517,8 @@ public sealed class SettingsRepository(SqliteDatabase database) : ISettingsRepos
                     weight_regularity = excluded.weight_regularity,
                     weight_mastery = excluded.weight_mastery,
                     display_name = excluded.display_name,
-                    difficult_ease_threshold = excluded.difficult_ease_threshold;
+                    difficult_ease_threshold = excluded.difficult_ease_threshold,
+                    weekly_minutes_goal = excluded.weekly_minutes_goal;
                 """;
             command.Parameters.AddWithValue("$new", settings.DailyNewTermsLimit);
             command.Parameters.AddWithValue("$review", settings.DailyReviewLimit);
@@ -465,6 +532,7 @@ public sealed class SettingsRepository(SqliteDatabase database) : ISettingsRepos
             command.Parameters.AddWithValue("$wm", settings.WeightMastery);
             command.Parameters.AddWithValue("$name", settings.DisplayName);
             command.Parameters.AddWithValue("$threshold", settings.DifficultEaseThreshold);
+            command.Parameters.AddWithValue("$minutes", settings.WeeklyMinutesGoal);
             await command.ExecuteNonQueryAsync(token);
             return 0;
         }, cancellationToken);

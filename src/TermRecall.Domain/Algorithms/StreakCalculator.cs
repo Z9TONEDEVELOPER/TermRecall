@@ -24,4 +24,27 @@ public static class StreakCalculator
 
         return streak;
     }
+
+    /// <summary>
+    /// Самая длинная непрерывная цепочка дней с хотя бы одним повторением.
+    /// Дырка в один день обрывает серию. Это факт журнала, не прогноз.
+    /// </summary>
+    public static int LongestStreak(IEnumerable<DateOnly> activeLocalDates)
+    {
+        var days = activeLocalDates.Distinct().OrderBy(day => day).ToList();
+        var best = 0;
+        var run = 0;
+        DateOnly? previous = null;
+        foreach (var day in days)
+        {
+            run = previous is DateOnly prior && prior.AddDays(1) == day ? run + 1 : 1;
+            previous = day;
+            if (run > best)
+            {
+                best = run;
+            }
+        }
+
+        return best;
+    }
 }

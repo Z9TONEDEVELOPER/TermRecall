@@ -133,6 +133,14 @@ public class LearningStoreTests
         var dashboard = await app.Get<IDashboardService>().GetAsync(CancellationToken.None);
         Assert.Equal(7, dashboard.LastSevenDays.Count);
         Assert.True(dashboard.Streak >= 1);
+
+        var quarter = await app.Get<IStatisticsService>().GetAsync(StatsRange.Quarter, CancellationToken.None);
+        var today = ReviewCalendar.LocalDate(app.Clock.UtcNow, app.Clock.TimeZone);
+        Assert.Equal(today.AddDays(-89), quarter.From);
+        Assert.True(quarter.Forecast.Days7 >= 1);
+        Assert.True(quarter.Forecast.Days30 >= quarter.Forecast.Days14);
+        Assert.True(quarter.Forecast.Days14 >= quarter.Forecast.Days7);
+        Assert.Contains(quarter.Categories, category => category.Terms > 0);
     }
 
     [Fact]
@@ -186,5 +194,160 @@ public class LearningStoreTests
         Assert.Equal(0, reloaded.IntervalDays);
         Assert.Equal(Sm2Algorithm.DefaultEaseFactor, reloaded.EaseFactor, 10);
         Assert.Equal("CLR", (await app.Get<ITermService>().ListAsync(CancellationToken.None)).Single(item => item.Title == "CLR").Title);
+    }
+
+    [Fact]
+    public async Task Progress_AwardsOnceFromTheJournalAndResetClearsIt()
+    {
+        await using var app = new TestApp();
+        var term = (await app.Get<ITermService>().ListAsync(CancellationToken.None)).First(item => item.Title == "CLR");
+        var before = await app.Get<ITermRepository>().GetAsync(term.Id, CancellationToken.None);
+        var empty = await app.Get<IProgressService>().GetAsync(CancellationToken.None);
+        Assert.All(empty.Achievements, card => Assert.Null(card.AwardedAtUtc));
+        Assert.Equal(60, empty.WeekGoalMinutes);
+        Assert.Equal(0, empty.WeekMinutes);
+        Assert.Equal(before!.IntervalDays, (await app.Get<ITermRepository>().GetAsync(term.Id, CancellationToken.None))!.IntervalDays);
+
+        await app.Get<IReviewService>().SubmitAsync(term.Id, 5, 120_000, CancellationToken.None);
+        var first = await app.Get<IProgressService>().GetAsync(CancellationToken.None);
+        var second = await app.Get<IProgressService>().GetAsync(CancellationToken.None);
+        var earned = first.Achievements.Single(card => card.Code == "first-review");
+        Assert.NotNull(earned.AwardedAtUtc);
+        Assert.Equal(earned.AwardedAtUtc, second.Achievements.Single(card => card.Code == "first-review").AwardedAtUtc);
+        Assert.Equal(2, first.WeekMinutes);
+        Assert.Contains(first.Calendar, cell => cell.IsToday && cell.Reviews == 1);
+        Assert.Null(first.Achievements.Single(card => card.Code == "hour-week").AwardedAtUtc);
+
+        await app.Get<ISettingsService>().ResetStatisticsAsync(CancellationToken.None);
+        var cleared = await app.Get<IProgressService>().GetAsync(CancellationToken.None);
+        Assert.All(cleared.Achievements, card => Assert.Null(card.AwardedAtUtc));
+        Assert.Empty(await app.Get<IReviewHistoryRepository>().ListAsync(CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task NotesArchiveAndMove_DoNotTouchTheSchedule()
+    {
+        await using var app = new TestApp();
+        var decks = await app.Get<IDeckService>().ListAsync(CancellationToken.None);
+        var created = await app.Get<ITermService>().SaveAsync(new TermDraft(
+            null,
+            "Инвариант",
+            "Условие, которое сохраняется.",
+            string.Empty,
+            string.Empty,
+            decks[0].Id,
+            null,
+            null,
+            "x > 0",
+            "https://learn.microsoft.com/dotnet",
+            "логика, код"), CancellationToken.None);
+
+        var stored = await app.Get<ITermRepository>().GetAsync(created.Id, CancellationToken.None);
+        Assert.Equal("x > 0", stored!.Code);
+        Assert.Equal(["код", "логика"], stored.Tags.OrderBy(tag => tag, StringComparer.CurrentCultureIgnoreCase).ToArray());
+        Assert.Equal(0, stored.IntervalDays);
+
+        await app.Get<ITermService>().SetArchivedAsync([created.Id], true, CancellationToken.None);
+        await app.Get<ITermService>().MoveAsync([created.Id], decks[1].Id, CancellationToken.None);
+        var moved = await app.Get<ITermRepository>().GetAsync(created.Id, CancellationToken.None);
+        Assert.Equal(decks[1].Id, moved!.DeckId);
+        Assert.True(moved.Archived);
+        Assert.Equal(0, moved.IntervalDays);
+        Assert.Equal(2, moved.Tags.Count);
+
+        var active = await app.Get<IDashboardService>().GetAsync(CancellationToken.None);
+        var week = await app.Get<IStatisticsService>().GetAsync(StatsRange.Week, CancellationToken.None);
+        var snapshot = await app.Get<IProgressService>().GetAsync(CancellationToken.None);
+        var report = StudyReport.Text(active, week, snapshot);
+        Assert.Contains("ещё неизвестны", report);
+        Assert.DoesNotContain("Инвариант", report);
+    }
+
+    [Fact]
+    public async Task MediaAndGeneratedCards_StayOutOfTheSchedule()
+    {
+        await using var app = new TestApp();
+        var deck = (await app.Get<IDeckService>().ListAsync(CancellationToken.None))[0];
+        var created = await app.Get<ICardDraftService>().CreateAsync(deck.Id, "JIT - Компиляция во время выполнения\nпросто строка\n", CancellationToken.None);
+        Assert.Equal(1, created.Added);
+        Assert.Equal(0, created.Skipped);
+        var term = (await app.Get<ITermService>().ListAsync(CancellationToken.None)).Single(item => item.Title == "JIT");
+        Assert.Equal(0, term.IntervalDays);
+
+        var png = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==");
+        await app.Get<ITermMediaStore>().AddAsync(term.Id, "dot.png", png, CancellationToken.None);
+        var stored = await app.Get<ITermMediaStore>().ListAsync(term.Id, CancellationToken.None);
+        Assert.Equal(MediaKind.Image, stored[0].Kind);
+        Assert.Equal(png, await app.Get<ITermMediaStore>().ReadAsync(stored[0].Id, CancellationToken.None));
+        Assert.Equal(0, (await app.Get<ITermRepository>().GetAsync(term.Id, CancellationToken.None))!.IntervalDays);
+
+        var json = await app.Get<ILibraryExchange>().ExportJsonAsync(CancellationToken.None);
+        Assert.Contains("dot.png", json);
+        await app.Get<ITermService>().DeleteAsync(term.Id, CancellationToken.None);
+        Assert.False(File.Exists(stored[0].AbsolutePath));
+        var imported = await app.Get<ILibraryExchange>().ImportJsonAsync(json, CancellationToken.None);
+        Assert.Equal(1, imported.Added);
+        var again = (await app.Get<ITermService>().ListAsync(CancellationToken.None)).Single(item => item.Title == "JIT");
+        var media = await app.Get<ITermMediaStore>().ListAsync(again.Id, CancellationToken.None);
+        Assert.Equal(png, await app.Get<ITermMediaStore>().ReadAsync(media[0].Id, CancellationToken.None));
+        Assert.Equal(0, again.IntervalDays);
+    }
+
+    [Fact]
+    public async Task WrittenAnswer_StaysOutOfSm2AndSurvivesRestart()
+    {
+        var app = new TestApp();
+        var term = (await app.Get<ITermService>().ListAsync(CancellationToken.None)).First(item => item.Title == "CLR");
+        await app.Get<IWrittenRecallService>().SaveAsync(term.Id, "Среда выполнения .NET", 4, 900, CancellationToken.None);
+
+        var stored = await app.Get<ITermRepository>().GetAsync(term.Id, CancellationToken.None);
+        var sm2 = await app.Get<IReviewHistoryRepository>().ListByTermAsync(term.Id, CancellationToken.None);
+        var written = await app.Get<IWrittenRecallService>().ListAsync(term.Id, CancellationToken.None);
+        Assert.Equal(0, stored!.IntervalDays);
+        Assert.Equal(TermStatus.New, stored.Status);
+        Assert.Empty(sm2);
+        Assert.Single(written);
+        Assert.Equal(4, written[0].Quality);
+        Assert.Equal("Среда выполнения .NET", written[0].ResponseText);
+
+        var path = app.DatabasePath;
+        await app.Services.DisposeAsync();
+        var again = new ServiceCollection();
+        again.AddTermRecall(path);
+        await using var restarted = again.BuildServiceProvider();
+        await restarted.GetRequiredService<IDatabaseInitializer>().InitializeAsync(CancellationToken.None);
+        var kept = await restarted.GetRequiredService<IWrittenRecallService>().ListAsync(term.Id, CancellationToken.None);
+        Assert.Single(kept);
+        await restarted.GetRequiredService<ISettingsService>().ResetStatisticsAsync(CancellationToken.None);
+        Assert.Empty(await restarted.GetRequiredService<IWrittenRecallService>().ListAsync(null, CancellationToken.None));
+    }
+
+    [Fact]
+    public async Task AssessmentAndFavorite_StayOutOfSm2()
+    {
+        await using var app = new TestApp();
+        var terms = await app.Get<ITermService>().ListAsync(CancellationToken.None);
+        var clr = terms.First(item => item.Title == "CLR");
+        var questions = await app.Get<IAssessmentService>().BuildAsync(AssessmentMode.Test, CancellationToken.None);
+        Assert.NotEmpty(questions);
+        var question = questions[0];
+        var wrong = question.Options.First(option => option.TermId != question.TermId);
+        var correct = await app.Get<IAssessmentService>().RecordAsync(AssessmentMode.Test, question.TermId, wrong.Text, 400, CancellationToken.None);
+        Assert.False(correct);
+
+        var marked = await app.Get<IFavoriteService>().ToggleAsync(clr.Id, CancellationToken.None);
+        Assert.True(marked);
+        Assert.Contains(clr.Id, await app.Get<IFavoriteService>().ListIdsAsync(CancellationToken.None));
+
+        var stored = await app.Get<ITermRepository>().GetAsync(clr.Id, CancellationToken.None);
+        Assert.Equal(0, stored!.IntervalDays);
+        Assert.Empty(await app.Get<IReviewHistoryRepository>().ListByTermAsync(clr.Id, CancellationToken.None));
+
+        await app.Get<ISettingsService>().ResetStatisticsAsync(CancellationToken.None);
+        Assert.Contains(clr.Id, await app.Get<IFavoriteService>().ListIdsAsync(CancellationToken.None));
+        var again = await app.Get<IAssessmentService>().RecordAsync(AssessmentMode.Exam, clr.Id, clr.Definition, null, CancellationToken.None);
+        Assert.True(again);
+        await app.Get<IFavoriteService>().ToggleAsync(clr.Id, CancellationToken.None);
+        Assert.DoesNotContain(clr.Id, await app.Get<IFavoriteService>().ListIdsAsync(CancellationToken.None));
     }
 }
