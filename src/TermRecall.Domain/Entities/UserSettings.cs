@@ -28,4 +28,7 @@ public sealed class UserSettings
 
     /// <summary>Порог EF, ниже которого термин попадает в тренировку сложных.</summary>
     public double DifficultEaseThreshold { get; set; } = 1.6;
+
+    /// <summary>Недельная цель в минутах по записанной длительности повторений. 0 — цель не задана.</summary>
+    public int WeeklyMinutesGoal { get; set; } = 60;
 }

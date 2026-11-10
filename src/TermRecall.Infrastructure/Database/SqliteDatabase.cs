@@ -4,10 +4,10 @@ using TermRecall.Infrastructure.Seeding;
 
 namespace TermRecall.Infrastructure.Database;
 
-public sealed class DatabaseOptions
+public sealed class DatabaseOptions(string path, bool seedStarterCatalog = true)
 {
-    public DatabaseOptions(string path) => Path = path;
-    public string Path { get; }
+    public string Path { get; } = path;
+    public bool SeedStarterCatalog { get; } = seedStarterCatalog;
 }
 
 public sealed class SqliteDatabase : ITransactionRunner, IDatabaseInitializer, IAsyncDisposable
@@ -18,9 +18,11 @@ public sealed class SqliteDatabase : ITransactionRunner, IDatabaseInitializer, I
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly AsyncLocal<SqliteTransaction?> _ambient = new();
     private readonly SqliteConnection _connection;
+    private readonly DatabaseOptions _options;
 
     public SqliteDatabase(DatabaseOptions options)
     {
+        _options = options;
         DatabasePath = options.Path;
         var directory = Path.GetDirectoryName(Path.GetFullPath(options.Path));
         if (!string.IsNullOrEmpty(directory))
@@ -48,7 +50,10 @@ public sealed class SqliteDatabase : ITransactionRunner, IDatabaseInitializer, I
         {
             await ApplyPragmasAsync(cancellationToken);
             await MigrateAsync(cancellationToken);
-            await TerminologySeeder.SeedIfEmptyAsync(this, cancellationToken);
+            if (_options.SeedStarterCatalog)
+            {
+                await TerminologySeeder.SeedIfEmptyAsync(this, cancellationToken);
+            }
         }
         catch (SqliteException) when (File.Exists(DatabasePath))
         {
@@ -192,7 +197,10 @@ public sealed class SqliteDatabase : ITransactionRunner, IDatabaseInitializer, I
         await _connection.OpenAsync(cancellationToken);
         await ApplyPragmasAsync(cancellationToken);
         await MigrateAsync(cancellationToken);
-        await TerminologySeeder.SeedIfEmptyAsync(this, cancellationToken);
+        if (_options.SeedStarterCatalog)
+        {
+            await TerminologySeeder.SeedIfEmptyAsync(this, cancellationToken);
+        }
     }
 
     private Task ApplyPragmasAsync(CancellationToken cancellationToken)

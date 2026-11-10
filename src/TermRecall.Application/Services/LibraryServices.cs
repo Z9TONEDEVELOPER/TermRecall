@@ -21,6 +21,8 @@ public interface ITermService
     Task<Term> GetAsync(Guid id, CancellationToken cancellationToken);
     Task<Term> SaveAsync(TermDraft draft, CancellationToken cancellationToken);
     Task DeleteAsync(Guid id, CancellationToken cancellationToken);
+    Task MoveAsync(IReadOnlyList<Guid> ids, Guid deckId, CancellationToken cancellationToken);
+    Task SetArchivedAsync(IReadOnlyList<Guid> ids, bool archived, CancellationToken cancellationToken);
     Task ReevaluateStatusesAsync(int masteryTargetDays, CancellationToken cancellationToken);
 }
 
@@ -73,6 +75,7 @@ public sealed class TermService(
     IDeckRepository decks,
     ICategoryRepository categories,
     IReviewHistoryRepository history,
+    ITermMediaStore media,
     IClock clock) : ITermService
 {
     public Task<IReadOnlyList<Term>> ListAsync(CancellationToken cancellationToken)
@@ -92,6 +95,10 @@ public sealed class TermService(
         }
 
         var categoryId = await ResolveCategoryAsync(draft, cancellationToken);
+        var code = draft.Code ?? string.Empty;
+        var link = draft.Link ?? string.Empty;
+        InputRules.CodeAndLink(code, link);
+        var tags = InputRules.Tags(draft.Tags ?? string.Empty);
         if (draft.Id is null)
         {
             var term = new Term
@@ -107,7 +114,11 @@ public sealed class TermService(
                 EaseFactor = Sm2Algorithm.DefaultEaseFactor,
                 IntervalDays = 0,
                 RepetitionCount = 0,
-                Status = TermStatus.New
+                Status = TermStatus.New,
+                Code = code.Trim(),
+                ReferenceUrl = link.Trim(),
+                Archived = draft.Archived,
+                Tags = tags.ToList()
             };
             await terms.AddAsync(term, cancellationToken);
             return term;
@@ -121,8 +132,49 @@ public sealed class TermService(
         existing.Explanation = explanation.Trim();
         existing.DeckId = draft.DeckId;
         existing.CategoryId = categoryId;
+        existing.Code = code.Trim();
+        existing.ReferenceUrl = link.Trim();
+        existing.Archived = draft.Archived;
+        existing.Tags = tags.ToList();
         await terms.UpdateAsync(existing, cancellationToken);
         return existing;
+    }
+
+    public async Task MoveAsync(IReadOnlyList<Guid> ids, Guid deckId, CancellationToken cancellationToken)
+    {
+        if (ids.Count == 0)
+        {
+            throw new ValidationException("Сначала отметьте термины.");
+        }
+
+        if (await decks.GetAsync(deckId, cancellationToken) is null)
+        {
+            throw new ValidationException("Выберите набор, в который перенести термины.");
+        }
+
+        foreach (var id in ids.Distinct())
+        {
+            var term = await terms.GetAsync(id, cancellationToken)
+                ?? throw new NotFoundException("Термин не найден.");
+            term.DeckId = deckId;
+            await terms.UpdateAsync(term, cancellationToken);
+        }
+    }
+
+    public async Task SetArchivedAsync(IReadOnlyList<Guid> ids, bool archived, CancellationToken cancellationToken)
+    {
+        if (ids.Count == 0)
+        {
+            throw new ValidationException("Сначала отметьте термины.");
+        }
+
+        foreach (var id in ids.Distinct())
+        {
+            var term = await terms.GetAsync(id, cancellationToken)
+                ?? throw new NotFoundException("Термин не найден.");
+            term.Archived = archived;
+            await terms.UpdateAsync(term, cancellationToken);
+        }
     }
 
     public async Task DeleteAsync(Guid id, CancellationToken cancellationToken)
@@ -132,6 +184,7 @@ public sealed class TermService(
             throw new NotFoundException("Термин не найден.");
         }
 
+        await media.DeleteForTermAsync(id, cancellationToken);
         await terms.DeleteAsync(id, cancellationToken);
     }
 

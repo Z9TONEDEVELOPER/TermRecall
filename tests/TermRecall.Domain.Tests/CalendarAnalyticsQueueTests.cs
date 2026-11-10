@@ -62,6 +62,87 @@ public class LearningAnalyticsTests
     }
 
     [Fact]
+    public void DailyGoal_IsCappedAndIgnoresAZeroGoal()
+    {
+        Assert.Equal(25, LearningAnalytics.DailyGoalPercent(10, 40), 10);
+        Assert.Equal(100, LearningAnalytics.DailyGoalPercent(40, 40), 10);
+        Assert.Equal(100, LearningAnalytics.DailyGoalPercent(50, 40), 10);
+        Assert.Equal(0, LearningAnalytics.DailyGoalPercent(3, 0));
+    }
+
+    [Fact]
+    public void Forecast_CountsOnlyTheNextScheduledDate()
+    {
+        var today = new DateOnly(2026, 11, 10);
+        var load = LearningAnalytics.ForecastScheduledReviews(
+        [
+            today.AddDays(-3),
+            today,
+            today.AddDays(10),
+            today.AddDays(40),
+            null
+        ], today);
+
+        Assert.Equal(2, load.Days7);
+        Assert.Equal(3, load.Days14);
+        Assert.Equal(3, load.Days30);
+    }
+
+    [Fact]
+    public void Categories_AttributeReviewsToTheCurrentName()
+    {
+        var platform = Guid.NewGuid();
+        var language = Guid.NewGuid();
+        var studies = LearningAnalytics.ByCategory(
+            [(platform, "Платформа"), (language, "Язык"), (Guid.NewGuid(), " ")],
+            [(platform, 5), (platform, 1), (language, 4)]);
+
+        Assert.Equal("Платформа", studies[0].Name);
+        Assert.Equal(2, studies[0].Reviews);
+        Assert.Equal(1, studies[0].Successful);
+        Assert.Contains(studies, study => study.Name == "Язык" && study.Successful == 1);
+        Assert.Contains(studies, study => study.Name == "Без категории" && study.Terms == 1 && study.Reviews == 0);
+    }
+
+    [Fact]
+    public void MonthCalendar_StartsOnMondayAndMarksOnlyStoredDays()
+    {
+        var today = new DateOnly(2026, 11, 10);
+        var cells = StudyCalendar.Month(today, new Dictionary<DateOnly, int> { [today] = 2, [today.AddDays(-1)] = 1 });
+        Assert.Equal(DayOfWeek.Monday, cells[0].Date.DayOfWeek);
+        Assert.Equal(0, cells.Count % 7);
+        Assert.Contains(cells, cell => cell.IsToday && cell.Reviews == 2 && cell.InFocusMonth);
+        Assert.Contains(cells, cell => cell.Date == new DateOnly(2026, 10, 26) && !cell.InFocusMonth && cell.Reviews == 0);
+        Assert.Equal(new DateOnly(2026, 11, 9), StudyCalendar.WeekStart(today));
+    }
+
+    [Fact]
+    public void WeekMinutes_IgnoreMissingAndShortDurations()
+    {
+        Assert.Equal(2, StudyTime.MinutesFromMilliseconds([60_000, null, -5, 59_999, 60_000]));
+        Assert.Equal(0, StudyTime.MinutesFromMilliseconds([null, 0]));
+    }
+
+    [Fact]
+    public void Achievements_UseJournalFactsAndDoNotInventAStreak()
+    {
+        Assert.Equal(3, StreakCalculator.LongestStreak(
+        [
+            new DateOnly(2026, 11, 1),
+            new DateOnly(2026, 11, 2),
+            new DateOnly(2026, 11, 3),
+            new DateOnly(2026, 11, 5)
+        ]));
+        var early = AchievementCatalog.EarnedCodes(new AchievementFacts(1, 1, 0, 2));
+        Assert.Equal(["first-review"], early);
+        var later = AchievementCatalog.EarnedCodes(new AchievementFacts(50, 7, 5, 60));
+        Assert.Contains("reviews-50", later);
+        Assert.Contains("streak-7", later);
+        Assert.Contains("mastered-5", later);
+        Assert.Contains("hour-week", later);
+    }
+
+    [Fact]
     public void Regularity_IsCappedAtOneHundred()
     {
         Assert.Equal(100, LearningAnalytics.RegularityPercent(10, 7), 10);
@@ -110,6 +191,41 @@ public class ReviewQueuePlannerTests
             new QueueRequest(StudyMode.DueMix, null, true, 10, 1, 0, 0, 1.6, false));
 
         Assert.Equal(["Просрочен", "Сегодня", "Новый А"], queue.Select(term => term.Title).ToArray());
+        var split = ReviewQueuePlanner.Classify(queue, now, zone);
+        Assert.Equal(1, split.Overdue);
+        Assert.Equal(1, split.DueToday);
+        Assert.Equal(1, split.NewTerms);
+        Assert.Equal(3, split.Total);
+    }
+
+    [Fact]
+    public void CardDrafts_KeepOnlyLinesWithASeparator()
+    {
+        var drafts = CardDrafts.Parse("""
+            CLR - Общеязыковая среда
+            # комментарий
+            без разделителя
+            GC — Сборщик мусора
+            """);
+        Assert.Equal(["CLR", "GC"], drafts.Select(draft => draft.Title).ToArray());
+        Assert.Equal("Сборщик мусора", drafts[1].Definition);
+    }
+
+    [Fact]
+    public void ArchivedTerm_StaysOutOfTheQueueWithoutChangingItsInterval()
+    {
+        var zone = TimeZoneInfo.Utc;
+        var now = new DateTime(2026, 11, 5, 9, 0, 0, DateTimeKind.Utc);
+        var term = Term("Архив", Guid.NewGuid(), now.Date, TermStatus.Review, 2.4, 4);
+        term.IntervalDays = 16;
+        term.Archived = true;
+        var queue = ReviewQueuePlanner.Plan(
+            [term],
+            now,
+            zone,
+            new QueueRequest(StudyMode.DueMix, null, true, 20, 5, 0, 0, 1.6, true));
+        Assert.Empty(queue);
+        Assert.Equal(16, term.IntervalDays);
     }
 
     [Fact]

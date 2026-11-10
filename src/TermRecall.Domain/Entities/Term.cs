@@ -19,4 +19,8 @@ public sealed class Term
     public int RepetitionCount { get; set; }
     public TermStatus Status { get; set; } = TermStatus.New;
     public int LapseCount { get; set; }
+    public string Code { get; set; } = string.Empty;
+    public string ReferenceUrl { get; set; } = string.Empty;
+    public bool Archived { get; set; }
+    public List<string> Tags { get; set; } = [];
 }

@@ -4,10 +4,12 @@ using System.Text.Json;
 using TermRecall.Application.Abstractions;
 using TermRecall.Application.DTOs;
 using TermRecall.Application.Exceptions;
+using TermRecall.Application.Validation;
 using TermRecall.Domain.Algorithms;
 using TermRecall.Domain.Entities;
 using TermRecall.Domain.Enums;
 using TermRecall.Infrastructure.Database;
+using TermRecall.Infrastructure.Repositories;
 
 namespace TermRecall.Infrastructure.Exchange;
 
@@ -15,6 +17,7 @@ public sealed class LibraryExchange(
     IDeckRepository decks,
     ICategoryRepository categories,
     ITermRepository terms,
+    ITermMediaStore media,
     ITransactionRunner transactions,
     IClock clock) : ILibraryExchange
 {
@@ -24,7 +27,7 @@ public sealed class LibraryExchange(
     {
         var snapshot = await SnapshotAsync(cancellationToken);
         var builder = new StringBuilder();
-        builder.AppendLine("Title,Definition,Example,Explanation,Category,Deck");
+        builder.AppendLine("Title,Definition,Example,Explanation,Category,Deck,Code,Link,Tags,Archived");
         foreach (var term in snapshot.Terms)
         {
             var deck = snapshot.Decks.First(item => item.Id == term.DeckId).Name;
@@ -34,7 +37,11 @@ public sealed class LibraryExchange(
                 .Append(Csv.Field(term.Example)).Append(',')
                 .Append(Csv.Field(term.Explanation)).Append(',')
                 .Append(Csv.Field(category)).Append(',')
-                .Append(Csv.Field(deck)).AppendLine();
+                .Append(Csv.Field(deck)).Append(',')
+                .Append(Csv.Field(term.Code)).Append(',')
+                .Append(Csv.Field(term.ReferenceUrl)).Append(',')
+                .Append(Csv.Field(string.Join(", ", term.Tags))).Append(',')
+                .Append(Csv.Field(term.Archived ? "1" : "0")).AppendLine();
         }
 
         return builder.ToString();
@@ -47,8 +54,11 @@ public sealed class LibraryExchange(
         {
             ExportedAtUtc = DateTime.UtcNow,
             Decks = snapshot.Decks.Select(deck => new DeckExport(deck.Name, deck.Description)).ToList(),
-            Categories = snapshot.Categories.Select(category => new CategoryExport(category.Name, category.Color)).ToList(),
-            Terms = snapshot.Terms.Select(term => new TermExport(
+            Categories = snapshot.Categories.Select(category => new CategoryExport(category.Name, category.Color)).ToList()
+        };
+        foreach (var term in snapshot.Terms)
+        {
+            document.Terms.Add(new TermExport(
                 term.Title,
                 term.Definition,
                 term.Example,
@@ -59,8 +69,13 @@ public sealed class LibraryExchange(
                 term.IntervalDays,
                 term.RepetitionCount,
                 term.Status.ToString(),
-                term.LapseCount)).ToList()
-        };
+                term.LapseCount,
+                term.Code,
+                term.ReferenceUrl,
+                string.Join(", ", term.Tags),
+                term.Archived,
+                await MediaOfAsync(term.Id, cancellationToken)));
+        }
         return JsonSerializer.Serialize(document, JsonOptions);
     }
 
@@ -99,7 +114,22 @@ public sealed class LibraryExchange(
                 continue;
             }
 
-            imports.Add(new TermExport(Cell("Title"), Cell("Definition"), Cell("Example"), Cell("Explanation"), NullIfEmpty(Cell("Category")), Cell("Deck"), null, null, null, null, null));
+            imports.Add(new TermExport(
+                Cell("Title"),
+                Cell("Definition"),
+                Cell("Example"),
+                Cell("Explanation"),
+                NullIfEmpty(Cell("Category")),
+                Cell("Deck"),
+                null,
+                null,
+                null,
+                null,
+                null,
+                NullIfEmpty(Cell("Code")),
+                NullIfEmpty(Cell("Link")),
+                NullIfEmpty(Cell("Tags")),
+                Cell("Archived") is "1" or "true" or "да"));
         }
 
         return ImportAsync(imports, cancellationToken, errors);
@@ -180,6 +210,19 @@ public sealed class LibraryExchange(
                     continue;
                 }
 
+                IReadOnlyList<string> tags;
+                try
+                {
+                    InputRules.CodeAndLink(item.Code ?? string.Empty, item.ReferenceUrl ?? string.Empty);
+                    tags = InputRules.Tags(item.Tags ?? string.Empty);
+                }
+                catch (ValidationException exception)
+                {
+                    errors.Add($"Термин «{item.Title}» пропущен: {exception.Message}");
+                    skipped++;
+                    continue;
+                }
+
                 var term = new Term
                 {
                     Id = Guid.NewGuid(),
@@ -194,7 +237,11 @@ public sealed class LibraryExchange(
                     IntervalDays = Math.Max(0, item.IntervalDays ?? 0),
                     RepetitionCount = Math.Max(0, item.RepetitionCount ?? 0),
                     LapseCount = Math.Max(0, item.LapseCount ?? 0),
-                    Status = Enum.TryParse<TermStatus>(item.Status, out var status) ? status : TermStatus.New
+                    Status = Enum.TryParse<TermStatus>(item.Status, out var status) ? status : TermStatus.New,
+                    Code = item.Code?.Trim() ?? string.Empty,
+                    ReferenceUrl = item.ReferenceUrl?.Trim() ?? string.Empty,
+                    Archived = item.Archived,
+                    Tags = tags.ToList()
                 };
                 if (term.RepetitionCount == 0 && term.IntervalDays == 0)
                 {
@@ -207,6 +254,7 @@ public sealed class LibraryExchange(
                 }
 
                 await terms.AddAsync(term, cancellationToken);
+                await ImportMediaAsync(term.Id, item.Media, errors, cancellationToken);
                 existing = existing.Append(term).ToList();
                 added++;
             }
@@ -217,6 +265,54 @@ public sealed class LibraryExchange(
 
     private async Task<(IReadOnlyList<Deck> Decks, IReadOnlyList<Category> Categories, IReadOnlyList<Term> Terms)> SnapshotAsync(CancellationToken cancellationToken)
         => (await decks.ListAsync(cancellationToken), await categories.ListAsync(cancellationToken), await terms.ListAsync(cancellationToken));
+
+    private async Task<List<MediaExport>> MediaOfAsync(Guid termId, CancellationToken cancellationToken)
+    {
+        var exports = new List<MediaExport>();
+        foreach (var item in await media.ListAsync(termId, cancellationToken))
+        {
+            var bytes = await media.ReadAsync(item.Id, cancellationToken);
+            if (bytes is null || bytes.Length == 0 || bytes.Length > TermMediaStore.MaxBytes)
+            {
+                continue;
+            }
+
+            exports.Add(new MediaExport(item.Kind == MediaKind.Audio ? "audio" : "image", item.FileName, Convert.ToBase64String(bytes)));
+        }
+
+        return exports;
+    }
+
+    private async Task ImportMediaAsync(Guid termId, IReadOnlyList<MediaExport>? items, List<string> errors, CancellationToken cancellationToken)
+    {
+        if (items is null)
+        {
+            return;
+        }
+
+        foreach (var item in items)
+        {
+            byte[] bytes;
+            try
+            {
+                bytes = Convert.FromBase64String(item.ContentBase64);
+            }
+            catch (FormatException)
+            {
+                errors.Add($"Файл «{item.FileName}» пропущен: повреждённая запись.");
+                continue;
+            }
+
+            try
+            {
+                await media.AddAsync(termId, item.FileName, bytes, cancellationToken);
+            }
+            catch (ValidationException exception)
+            {
+                errors.Add($"Файл «{item.FileName}» пропущен: {exception.Message}");
+            }
+        }
+    }
 
     private static string? NullIfEmpty(string value) => string.IsNullOrWhiteSpace(value) ? null : value;
 }
@@ -321,7 +417,14 @@ public sealed record TermExport(
     int? IntervalDays,
     int? RepetitionCount,
     string? Status,
-    int? LapseCount);
+    int? LapseCount,
+    string? Code = null,
+    string? ReferenceUrl = null,
+    string? Tags = null,
+    bool Archived = false,
+    IReadOnlyList<MediaExport>? Media = null);
+
+public sealed record MediaExport(string Kind, string FileName, string ContentBase64);
 
 public sealed class BackupService(SqliteDatabase database) : IBackupService
 {

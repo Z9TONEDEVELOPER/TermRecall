@@ -3,6 +3,8 @@ using TermRecall.Domain.Enums;
 
 namespace TermRecall.Domain.Algorithms;
 
+public readonly record struct PlannedSession(int Overdue, int DueToday, int NewTerms, int Total);
+
 public sealed record QueueRequest(
     StudyMode Mode,
     Guid? DeckId,
@@ -27,7 +29,7 @@ public static class ReviewQueuePlanner
         QueueRequest request)
     {
         var today = ReviewCalendar.LocalDate(nowUtc, timeZone);
-        var pool = terms.ToList();
+        var pool = terms.Where(term => !term.Archived).ToList();
         if (request.DeckId is Guid deckId)
         {
             pool = pool.Where(term => term.DeckId == deckId).ToList();
@@ -113,6 +115,36 @@ public static class ReviewQueuePlanner
         }
 
         return result;
+    }
+
+    /// <summary>
+    /// Разбирает уже построенную очередь: просроченные, срок сегодня и новые.
+    /// Новые не считаются повторением существующих карточек.
+    /// </summary>
+    public static PlannedSession Classify(IReadOnlyList<Term> planned, DateTime nowUtc, TimeZoneInfo timeZone)
+    {
+        var overdue = 0;
+        var dueToday = 0;
+        var fresh = 0;
+        foreach (var term in planned)
+        {
+            if (IsNew(term) || term.NextReviewAtUtc is null)
+            {
+                fresh++;
+                continue;
+            }
+
+            if (ReviewCalendar.IsOverdue(term.NextReviewAtUtc, nowUtc, timeZone))
+            {
+                overdue++;
+            }
+            else if (ReviewCalendar.IsDue(term.NextReviewAtUtc, nowUtc, timeZone))
+            {
+                dueToday++;
+            }
+        }
+
+        return new PlannedSession(overdue, dueToday, fresh, planned.Count);
     }
 
     private static void Take(List<Term> target, List<Term> source, int limit)

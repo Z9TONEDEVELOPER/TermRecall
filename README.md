@@ -22,6 +22,12 @@ dotnet test tests/TermRecall.Application.Tests/TermRecall.Application.Tests.cspr
 dotnet test tests/TermRecall.Infrastructure.Tests/TermRecall.Infrastructure.Tests.csproj
 ```
 
+## Демонстрационная база
+
+В Debug, если режим ещё не выбран, приложение открывает отдельный файл `termrecall-demo.db`: 125 терминов и история, посчитанная тем же SM-2. Пользовательский файл `termrecall.db` при этом не меняется. В Release без явного выбора открывается пустая пользовательская база.
+
+Переключение, пересоздание и удаление демобазы — в настройках, раздел «Демонстрационные данные». Удаление стирает только демофайл. Медиа демобазы лежат в соседней папке `termrecall-demo-media`.
+
 ## Сборка Android
 
 Нужен workload `android` (на системном SDK — с правами администратора):
@@ -35,21 +41,32 @@ dotnet build src/TermRecall.Android/TermRecall.Android.csproj -f net10.0-android
 
 На машине, где собирался этот репозиторий, workload в `/usr/local/share/dotnet` без прав администратора не ставится. Проект Android в решении есть и ссылается на общий UI.
 
+## Сборка Android
+
+Нужен workload `android`. На этой машине он установлен, APK собирается:
+
+```bash
+dotnet build src/TermRecall.Android/TermRecall.Android.csproj -f net10.0-android
+```
+
+Пакет — `src/TermRecall.Android/bin/Debug/net10.0-android/com.termrecall.app.apk`. Если `JAVA_HOME` указывает на несуществующий каталог Homebrew, задайте живой JDK 17 перед сборкой.
+
 ## Сборка iOS
 
-Нужны macOS, Xcode и workload `ios`.
+Для Xcode 27.2 нужен workload `ios` **27.2.10000**. Он ставится набором `10.0.404` поверх SDK 10.0.4xx:
+
+```bash
+sudo /usr/local/share/dotnet/dotnet workload install ios --version 10.0.404
+dotnet workload list   # ios 27.2.10000
+```
+
+Минимальная iOS для этого workload — 15.0. Сборка для симулятора:
 
 ```bash
 dotnet build src/TermRecall.iOS/TermRecall.iOS.csproj -f net10.0-ios -r iossimulator-arm64
 ```
 
-Сборка симулятора на этой машине проходит так: workload `ios` установлен, проверка номера Xcode отключена, потому что пакет .NET for iOS 26.2 рассчитан на Xcode 26.2, а установлен Xcode 26.6. Отдельный launch storyboard не подключён: `ibtool` этой пары версий на нём падает. Для симулятора подпись не требуется (`EnableCodeSigning=false`).
-
-Запуск на симуляторе после успешной сборки:
-
-```bash
-dotnet build src/TermRecall.iOS/TermRecall.iOS.csproj -t:Run -f net10.0-ios -r iossimulator-arm64
-```
+Debug-сборка после компиляции подписывается сертификатом Apple Development: симулятор Xcode 27 закрывает ad-hoc подпись. Среды симулятора 26.0 и 27.0 подходят, отдельный runtime 27.2 не обязателен.
 
 ## Как устроено
 

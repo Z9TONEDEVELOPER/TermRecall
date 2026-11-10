@@ -8,7 +8,9 @@
     <ApplicationVersion>1</ApplicationVersion>
     <ApplicationDisplayVersion>1.0</ApplicationDisplayVersion>
     <AndroidPackageFormat>apk</AndroidPackageFormat>
+    <AndroidApplication>true</AndroidApplication>
     <AndroidEnableProfiledAot>false</AndroidEnableProfiledAot>
+    <JavaSdkDirectory Condition="Exists('/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home')">/Library/Java/JavaVirtualMachines/jdk-21.jdk/Contents/Home</JavaSdkDirectory>
   </PropertyGroup>
 
   <ItemGroup>

@@ -1,2 +1,16 @@
 <Solution>
+  <Folder Name="/src/">
+    <Project Path="src/TermRecall.Domain/TermRecall.Domain.csproj" />
+    <Project Path="src/TermRecall.Application/TermRecall.Application.csproj" />
+    <Project Path="src/TermRecall.Infrastructure/TermRecall.Infrastructure.csproj" />
+    <Project Path="src/TermRecall.App/TermRecall.App.csproj" />
+    <Project Path="src/TermRecall.Desktop/TermRecall.Desktop.csproj" />
+    <Project Path="src/TermRecall.Android/TermRecall.Android.csproj" />
+    <Project Path="src/TermRecall.iOS/TermRecall.iOS.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/TermRecall.Domain.Tests/TermRecall.Domain.Tests.csproj" />
+    <Project Path="tests/TermRecall.Application.Tests/TermRecall.Application.Tests.csproj" />
+    <Project Path="tests/TermRecall.Infrastructure.Tests/TermRecall.Infrastructure.Tests.csproj" />
+  </Folder>
 </Solution>
